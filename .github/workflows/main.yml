@@ -23,6 +23,22 @@ jobs:
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) { New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires }
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+      - name: Install and Configure OpenSSH Server
+        run: |
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+          Start-Service sshd
+          Set-Service -Name sshd -StartupType 'Automatic'
+          if (-not (Get-NetFirewallRule -Name sshd -ErrorAction SilentlyContinue)) { New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 }
+          $pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBVXQujZ4M1bfUZU0I/Ylf95BrOgaZ9YjzQGsHA0OgNy hatch"
+          $sshDir = "C:\Users\RDP\.ssh"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          Set-Content -Path "$sshDir\authorized_keys" -Value $pubkey -Encoding ascii
+          icacls $sshDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" /grant:r "RDP:(OI)(CI)F"
+          icacls "$sshDir\authorized_keys" /inheritance:r /grant:r "SYSTEM:F" /grant:r "RDP:F"
+          $adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+          Set-Content -Path $adminKeys -Value $pubkey -Encoding ascii
+          icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F"
+          Write-Host "OpenSSH Server installed, sshd running, Muse key installed for RDP."
       - name: Install Tailscale
         run: |
           $installerPath = "$env:TEMP\tailscale.msi"
@@ -43,11 +59,17 @@ jobs:
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) { Write-Error "TCP connection to RDP port 3389 failed"; exit 1 }
           Write-Host "TCP connectivity successful!"
+          $sshTest = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 22
+          if (-not $sshTest.TcpTestSucceeded) { Write-Error "TCP connection to SSH port 22 failed"; exit 1 }
+          Write-Host "SSH port 22 reachable!"
       - name: Maintain Connection
         run: |
           Write-Host "=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: (the RDP_PASSWORD secret you set)"
+          Write-Host "=== SSH ACCESS ==="
+          Write-Host "ssh RDP@$env:TAILSCALE_IP"
+          Write-Host "SSH key auth enabled (Muse hatch key)."
           Write-Host "=================="
           while ($true) { Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"; Start-Sleep -Seconds 300 }
